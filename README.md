@@ -1,115 +1,115 @@
 # A COLREGs-compliant multi-ship collision avoidance approach based on Deep Reinforcement Learning
 
-**NUS IE4100R Final Year Project** · March 2023  
-**Author:** He Zhenyu (A0205505R) · **Supervisor:** Dr. Li Haobin
+**NUS IE4100R Final Year Project** · AY2022/23 Sem 2 (Mar 2023)  
+**Author:** He Zhenyu (A0205505R) · **Department:** Industrial Systems Engineering and Management  
+**Supervisor:** Dr. Li Haobin
 
-This repository contains **partial thesis / experiment code** for an undergrad FYP on autonomous multi-ship collision avoidance that stays aligned with **COLREGs** (Convention on the International Regulations for Preventing Collisions at Sea), trained with **deep reinforcement learning**.
+Partial thesis / experiment code for autonomous **multi-ship** collision avoidance that stays aligned with **COLREGs**, trained with **deep reinforcement learning**.
+
+<p align="center">
+  <img src="docs/images/multi-ship-sim.png" alt="Custom multi-ship simulation environment" width="520"/>
+</p>
+<p align="center"><em>Figure: custom Gym multi-ship environment — coloured hulls are agents, matching rings are destinations.</em></p>
 
 ## Problem
 
-Busy seaways create high-risk encounters (head-on, crossing, overtaking). COLREGs rules are intentionally broad and often interpreted subjectively, while many existing autonomous methods either:
+Busy seaways create high-risk encounters. COLREGs (41 rules; steering & sailing Rules 4–19 matter most here) are intentionally broad, so interpretation is often subjective. Many DRL collision-avoidance works also fall short in practice because they:
 
-- ignore COLREGs, or
-- optimise a **single** ship’s safety in 1-to-many settings (which can push risk onto other vessels)
+- focus on **1-to-1** encounters, or
+- train a **single** ego ship against others (1-to-many), which can selfishly push risk onto neighbouring vessels
 
-Real traffic is multi-agent: ships interact together, not as one ego vessel dodging static others.
+This FYP targets **multi-ship** open-sea scenarios where several agents must arrive safely **together**, while respecting give-way / stand-on behaviour in:
+
+| Encounter | COLREGs focus |
+|-----------|----------------|
+| Head-on | Rule 14 — both alter to **starboard**, pass port-to-port |
+| Overtaking | Rules 13/16/17 — overtaking vessel is give-way (>22.5° abaft the beam) |
+| Crossing | Rules 15/16/17 — vessel with the other on her **starboard** keeps out of the way |
+
+<p align="center">
+  <img src="docs/images/colregs-encounters.png" alt="COLREGs overtaking, head-on, and crossing diagrams" width="640"/>
+</p>
+<p align="center"><em>Figure: COLREGs encounter geometry used in the project (overtaking, head-on, crossing).</em></p>
 
 ## Approach
 
-Build a custom multi-ship Gym environment (`ssship` in the notebook) and train DRL agents so vessels reach destinations while:
+Custom Gym env (`ssship`) + Stable-Baselines3 agents (`PPO`, `DQN`, `A2C`). Ships must reach destinations while avoiding collisions, limiting encounter risk (ship domain / TCPA / DCPA-style signals), and reducing COLREGs violations.
 
-- avoiding collisions
-- respecting COLREGs steering/sailing behaviour where possible
-- managing encounter risk (ship domain / TCPA / DCPA-style signals in the reward)
-
-### Environment overview
+### Environment snapshot
 
 | Item | Detail |
 |------|--------|
-| Ships | Configurable via `NUMBER_OF_SHIPS` (code supports **up to 8**; FYP runs focused on **4**) |
-| Map | Square open-sea grid; default `MAP = 200` scaled by `SCALAR = 2` for rendering |
-| Episode length | `TIMESTEP = 2000` steps (episode ends earlier on all-arrive / collision) |
-| Framework | OpenAI Gym-style API + pygame render (`human` / `rgb_array`) |
-| Training stack | Stable-Baselines3 (`PPO`, `DQN`, `A2C`) + TensorBoard |
+| Ships | `NUMBER_OF_SHIPS` up to **8**; FYP train/test focused on **4-ship** open-sea cases |
+| Map | Square grid (`MAP = 200`, `SCALAR = 2` for render) |
+| Episode | Up to `TIMESTEP = 2000` steps; ends on all-arrive, collision, or timeout |
+| Risk | Ship domain + TCPA/DCPA helpers for continuous risk penalties |
 
-### Observation space
+### Observation space `(n_ships, 9)`
 
-Each step returns a state array of shape **`(n_ships, 9)`**.
+Per-ship feature vector as stored in the notebook:
 
-In the notebook env, ship `i` is stored as:
+| Idx | Feature | Notes |
+|----:|---------|--------|
+| 0–1 | `x`, `y` | Position |
+| 2 | `speed` | Spawned ~`[0.5, 1.5]` |
+| 3 | `bearing` | Heading degrees |
+| 4–5 | `Lx`, `Ly` | Destination |
+| 6 | `arrived` | `0` / `1` |
+| 7–8 | `length`, `width` | Ship size |
 
-| Index | Feature | Notes |
-|------:|---------|--------|
-| 0 | `x` | Position on the map |
-| 1 | `y` | Position on the map |
-| 2 | `speed` | Initialised roughly in `[0.5, 1.5]` |
-| 3 | `bearing` | Heading angle in degrees `[0, 360)` |
-| 4 | `Lx` | Destination x |
-| 5 | `Ly` | Destination y |
-| 6 | `arrived` | `0` / `1` flag |
-| 7 | `length` | Ship length (spawned small ints) |
-| 8 | `width` | Ship width |
+### Action space (per ship, each step)
 
-So the joint observation is an **`n × 9`** matrix of per-ship kinematic / goal / size features (not raw camera frames). Destinations are sampled so they are not too close to the spawn point; ships are also spawned with a minimum separation.
+| Id | Effect |
+|---:|--------|
+| 0 | Steer **+15°** |
+| 1 | Steer **−15°** |
+| 2 | Accelerate (`+0.1`) |
+| 3 | Decelerate (`−0.1`) |
+| 4 | Do nothing |
 
-Declared Gym space (as in code):
+Arrived ships stop acting. Motion uses simplified kinematics (immediate effect of actions — an explicit FYP assumption).
 
-```python
-observation_space = spaces.Box(0, MAP / SCALAR, shape=(n_ships, 9), dtype=int)
-```
+### Reward / timestep logic
 
-### Action space
+Each step combines time penalty, arrival reward, collision terminate+penalty, proximity risk, destination distance shaping, and COLREGs-related penalties for bad head-on / crossing / overtaking choices.
 
-One discrete control is chosen **per ship** each step (joint action length = `n_ships`).
+<p align="center">
+  <img src="docs/images/reward-timestep-flow.png" alt="Reward evaluation flowchart per timestep" width="560"/>
+</p>
+<p align="center"><em>Figure: per-timestep reward / termination flow (arrival, domain risk, rule violation, collision).</em></p>
 
-| Action id | Effect in `step()` |
-|----------:|--------------------|
-| `0` | Steer **+15°** (bearing increases) |
-| `1` | Steer **−15°** (bearing decreases) |
-| `2` | **Accelerate** (`speed += 0.1`) |
-| `3` | **Decelerate** (`speed -= 0.1`) |
-| `4` | **Do nothing** |
+**Action masking** (hard-block illegal COLREGs actions instead of only penalising) was also studied as an alternative.
 
-Motion update (simplified kinematics): position advances from current speed and bearing; map edges clamp / slide rather than wrap freely. Arrived ships (`arrived == 1`) no longer apply actions.
+## Results highlights
 
-Conceptually this matches the FYP presentation’s five controls: steer clockwise / anti-clockwise, accelerate, decelerate, idle.
+From the FYP evaluation narrative (not a full metrics dump):
 
-### Rewards & risk (short)
+- Agents were stress-tested over **large numbers of random 4-ship episodes**, scoring collisions, arrivals, COLREGs violations, and time-to-all-arrive
+- **Reward shaping** mattered as much as the algorithm: too-complex COLREGs/ship-domain terms hurt convergence within the **~30M** step budget; overly harsh time or collision weights produced undesired behaviours (circling, over-avoidance, intentional early collision)
+- Among SB3 baselines in the notebook experiments, **PPO** generally looked strongest vs **A2C** / **DQN** in comparative runs
+- Action masking cut COLREGs violations but **raised collisions** in the reported test setup — soft penalties generalised better for safety in that comparison
 
-Shaped from several terms (weights are notebook hyperparameters such as `Collision`, `Arrival`, `TSP`, `violation`):
+<p align="center">
+  <img src="docs/images/algo-compare-ppo-a2c-dqn.png" alt="PPO vs A2C vs DQN training comparison" width="560"/>
+</p>
+<p align="center"><em>Figure: comparative training traces for PPO, A2C, and DQN.</em></p>
 
-- per-step time penalty
-- arrival reward when within destination radius
-- collision penalty + episode terminate when ships get too close
-- continuous risk penalty from TCPA/DCPA when ships are near
-- COLREGs-related penalties for head-on / crossing / overtaking give-way situations
+<p align="center">
+  <img src="docs/images/training-reward-10m.png" alt="Example training reward curve over 10M steps" width="560"/>
+</p>
+<p align="center"><em>Figure: example long-horizon training reward curve (~10M steps) showing exploration volatility then a more stable regime.</em></p>
 
-Reward design was a major focus: avoid local optima and bad behaviours (circling to farm progress reward, over-avoidance, intentional early collision under a harsh time penalty).
+## Repo contents
 
-An **action-masking** variant (block illegal COLREGs actions instead of only penalising them) was also studied; it cut COLREGs violations in tests but raised collisions in the reported evaluation setup.
-
-### Algorithms explored
-
-- **DQN** (off-policy)
-- **PPO** (on-policy)
-- **A2C** (actor–critic)
-
-Project training budget discussed in the FYP: up to **~30M** environment timesteps.
-
-## What’s in this repo
-
-| File | Role |
+| Path | Role |
 |------|------|
-| `HEZHENYU_fypcodeused.ipynb` | Main FYP code used: custom env, TCPA/DCPA helpers, COLREGs checks, training loops |
-| `README.md` | Project overview |
+| `HEZHENYU_fypcodeused.ipynb` | Env, TCPA/DCPA + COLREGs helpers, training loops |
+| `docs/images/` | Figures from the FYP report (encounters, reward flow, sim, training) |
+| `README.md` | Overview |
 
-> This is **partial** project code (not a full paper/code release). Presentation materials from the FYP viva are separate from this repo.
+> Partial project code — not a full paper release. Full report / slides live outside this repo.
 
 ## Quick start
-
-1. Use a Python environment with the notebook dependencies (e.g. `gym`, `numpy`, `tensorflow` / `torch`, `stable-baselines3`, `matplotlib`, `pygame` for render modes).
-2. Open `HEZHENYU_fypcodeused.ipynb`.
-3. Adjust env settings near the top before training:
 
 ```python
 TIMESTEP = 2000
@@ -118,13 +118,15 @@ SCALAR = 2
 MAP = 200
 ```
 
-## Limitations (as noted in the FYP)
+1. Install notebook deps (`gym`, `numpy`, `torch` / `tensorflow`, `stable-baselines3`, `matplotlib`, `pygame`, …).
+2. Open `HEZHENYU_fypcodeused.ipynb` and run env / training cells.
 
-- Training/evaluation centred on **4-ship** open-sea scenarios
-- Actions assumed to affect ship motion immediately (simplified dynamics)
-- Compute capped at **30M** timesteps
-- More realistic ship physics would be a natural next step
+## Limitations
+
+- 4-ship open-sea focus; simplified immediate-action dynamics
+- Training compute capped (~30M steps discussed in the FYP)
+- More realistic ship physics left as future work
 
 ## Citation / context
 
-Module **IE4100R** · B.Eng dissertation presentation · **9 Mar 2023** · National University of Singapore
+**IE4100R** B.Eng dissertation · Department of ISEM · NUS · presentation **9 Mar 2023**
