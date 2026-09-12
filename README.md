@@ -1,6 +1,6 @@
 # A COLREGs-compliant multi-ship collision avoidance approach based on Deep Reinforcement Learning
 
-**NUS IE4100R Final Year Project** · AY2022/23 Sem 2 (Mar 2023)  
+**NUS IE4100R Final Year Project** · AY2022/23 (Mar 2023)  
 **Author:** He Zhenyu (A0205505R) · **Department:** Industrial Systems Engineering and Management  
 **Supervisor:** Dr. Li Haobin
 
